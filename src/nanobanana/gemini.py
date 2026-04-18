@@ -74,13 +74,9 @@ class GeminiClient:
         for part in response.parts:
             if part.text:
                 yield {"type": "text", "text": part.text}
-            else:
-                img = part.as_image()
-                if img is not None:
-                    buf = io.BytesIO()
-                    img.save(buf, format="PNG")
-                    yield {
-                        "type": "image",
-                        "data": base64.b64encode(buf.getvalue()).decode(),
-                        "mime_type": "image/png",
-                    }
+            elif part.inline_data and part.inline_data.data:
+                yield {
+                    "type": "image",
+                    "data": base64.b64encode(part.inline_data.data).decode(),
+                    "mime_type": part.inline_data.mime_type or "image/png",
+                }
