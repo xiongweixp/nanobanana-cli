@@ -296,9 +296,12 @@ class NanobananaServer:
             for chunk in self.gemini.send(chat, prompt, files):
                 if chunk["type"] == "image":
                     img_index += 1
-                    path = _save_image(chunk, cwd, img_index)
-                    chunk = {**chunk, "path": path}
-                    logger.debug("image saved → %s", path)
+                    try:
+                        path = _save_image(chunk, cwd, img_index)
+                        chunk = {**chunk, "path": path}
+                        logger.info("image saved → %s", path)
+                    except Exception as save_err:
+                        logger.error("failed to save image: %s (cwd=%s)", save_err, cwd)
                 self._notify("session/update", {
                     "sessionId": session_name,
                     "requestId": rid,
