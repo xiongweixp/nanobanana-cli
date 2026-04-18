@@ -56,9 +56,15 @@ logger = logging.getLogger(__name__)
 class NanobananaServer:
     def __init__(self) -> None:
         self.sessions = SessionManager()
-        self.gemini = GeminiClient()
+        self._gemini: GeminiClient | None = None  # lazy — initialised on first session/new
         self._shutdown = False
         self._ndjson: bool | None = None  # None = not yet detected
+
+    @property
+    def gemini(self) -> GeminiClient:
+        if self._gemini is None:
+            self._gemini = GeminiClient()
+        return self._gemini
 
     # ── Wire I/O ──────────────────────────────────────────────────────────────
 
@@ -167,7 +173,9 @@ class NanobananaServer:
     # ── Handlers ──────────────────────────────────────────────────────────────
 
     def _on_initialize(self, msg: dict) -> None:
+        params = msg.get("params") or {}
         self._ok(msg["id"], {
+            "protocolVersion": params.get("protocolVersion", 1),
             "serverInfo": {"name": "nanobanana", "version": "1.0.0"},
             "capabilities": {
                 "promptCapabilities": {"image": True},
@@ -185,7 +193,11 @@ class NanobananaServer:
                 or str(uuid.uuid4()))
         logger.debug("session/new params=%s resolved name=%s", params, name)
 
-        chat = self.gemini.create_chat()
+        try:
+            chat = self.gemini.create_chat()
+        except Exception as exc:
+            self._err(msg["id"], -32603, _classify_error(exc))
+            return
         replaced = self.sessions.create(name, chat)
         self._ok(msg["id"], {"sessionId": name, "replaced": replaced})
 
