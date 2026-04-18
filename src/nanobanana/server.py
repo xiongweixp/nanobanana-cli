@@ -70,6 +70,7 @@ def _sanitize_for_log(obj: Any) -> Any:
 class NanobananaServer:
     def __init__(self) -> None:
         self.sessions = SessionManager()
+        self._last_image: dict[str, str] = {}  # session_name → last image path
         self._gemini: GeminiClient | None = None  # lazy — initialised on first session/new
         self._shutdown = False
         self._ndjson: bool | None = None  # None = not yet detected
@@ -307,6 +308,14 @@ class NanobananaServer:
             self._err(rid, -32602, "session/prompt 需要 text 参数")
             return
 
+        # If no files were provided but we have a last image for this session,
+        # inject it so the model can edit the previous image.
+        if not files and session_name in self._last_image:
+            last = self._last_image[session_name]
+            if os.path.exists(last):
+                files = [last]
+                logger.debug("injecting last image for editing: %s", last)
+
         img_index = 0
         try:
             for chunk in self.gemini.send(chat, prompt, files):
@@ -314,13 +323,14 @@ class NanobananaServer:
                     img_index += 1
                     try:
                         path = _save_image(chunk, img_index)
+                        self._last_image[session_name] = path
                         logger.info("image saved → %s", path)
                         # Send path as text; skip forwarding the raw base64 chunk
                         self._notify("session/update", {
                             "sessionId": session_name,
                             "requestId": rid,
                             "update": {"type": "content_block",
-                                       "block": {"type": "text", "text": f"图片已保存: {path}"}},
+                                       "block": {"type": "text", "text": f"[IMAGE_PATH]: {path}"}},
                         })
                     except Exception as save_err:
                         logger.error("failed to save image: %s", save_err)
@@ -332,6 +342,12 @@ class NanobananaServer:
                 })
             # Persist history so the next process can restore multi-turn context
             self.gemini.save_history(chat, session_name)
+            self._notify("session/update", {
+                "sessionId": session_name,
+                "requestId": rid,
+                "update": {"type": "content_block",
+                           "block": {"type": "text", "text": "[done]"}},
+            })
             self._notify("session/stopped", {
                 "sessionId": session_name,
                 "requestId": rid,
@@ -385,12 +401,11 @@ class NanobananaServer:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-OUTPUT_DIR = os.path.expanduser("~/nanobanana_images")
+OUTPUT_DIR = os.getcwd()
 
 
 def _save_image(chunk: dict, index: int) -> str:
-    """Write an image chunk to ~/nanobanana_images/ and return the absolute path."""
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    """Write an image chunk to the current working directory and return the absolute path."""
     ext = (chunk.get("mime_type") or "image/png").split("/")[-1]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"nanobanana_{ts}_{index}.{ext}"
