@@ -34,7 +34,14 @@ export NANOBANANA_DEBUG=1
 
 ## 接入 acpx
 
-将 `acpx.config.json` 放置于项目根目录，acpx 会自动识别：
+acpx 按以下顺序读取配置，后者覆盖前者：
+
+| 配置文件 | 说明 |
+|----------|------|
+| `~/.acpx/config.json` | 全局配置，对所有项目生效 |
+| `<项目根>/.acpxrc.json` | 项目级配置，已包含在本仓库中 |
+
+本仓库根目录的 `.acpxrc.json` 已配置好，进入项目目录后 acpx 会自动识别：
 
 ```json
 {
@@ -46,10 +53,16 @@ export NANOBANANA_DEBUG=1
 }
 ```
 
-或通过 `--agent` 标志直接调用：
+也可以通过 `--agent` 标志临时指定，无需配置文件：
 
 ```bash
 acpx --agent nanobanana 'session/new --name project1'
+```
+
+查看当前生效的配置：
+
+```bash
+acpx config show
 ```
 
 ## 使用示例
@@ -119,7 +132,7 @@ nanobanana 实现 [Agent Client Protocol](https://github.com/agentclientprotocol
 ```
 nanobanana-cli/
 ├── pyproject.toml
-├── acpx.config.json
+├── .acpxrc.json
 └── src/nanobanana/
     ├── __main__.py   # 入口
     ├── server.py     # ACP JSON-RPC 服务器
