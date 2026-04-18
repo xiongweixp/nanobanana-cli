@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from typing import Any
 
 from .gemini import GeminiClient
@@ -176,10 +177,13 @@ class NanobananaServer:
 
     def _on_session_new(self, msg: dict) -> None:
         params = msg.get("params") or {}
-        name = params.get("name") or params.get("sessionId")
-        if not name:
-            self._err(msg["id"], -32602, "session/new 需要 name 参数")
-            return
+        # acpx passes --name as its own label; the agent receives sessionId/id/name
+        # in params — or nothing at all. Fall back to a generated UUID.
+        name = (params.get("sessionId")
+                or params.get("id")
+                or params.get("name")
+                or str(uuid.uuid4()))
+        logger.debug("session/new params=%s resolved name=%s", params, name)
 
         chat = self.gemini.create_chat()
         replaced = self.sessions.create(name, chat)
@@ -197,9 +201,12 @@ class NanobananaServer:
     def _on_session_prompt(self, msg: dict) -> None:
         params = msg.get("params") or {}
         rid = msg.get("id")
-        session_name = params.get("sessionId") or params.get("name")
+        session_name = (params.get("sessionId")
+                        or params.get("id")
+                        or params.get("name"))
         prompt = params.get("text") or params.get("prompt", "")
         files: list[str] = params.get("files") or []
+        logger.debug("session/prompt params=%s", params)
 
         if not session_name:
             self._err(rid, -32602, "session/prompt 需要 sessionId 参数")
