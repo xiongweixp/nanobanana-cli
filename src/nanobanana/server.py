@@ -314,9 +314,8 @@ class NanobananaServer:
                     img_index += 1
                     try:
                         path = _save_image(chunk, img_index)
-                        chunk = {**chunk, "path": path}
                         logger.info("image saved → %s", path)
-                        # Send path as a text message so it's visible in acpx output
+                        # Send path as text; skip forwarding the raw base64 chunk
                         self._notify("session/update", {
                             "sessionId": session_name,
                             "requestId": rid,
@@ -325,6 +324,7 @@ class NanobananaServer:
                         })
                     except Exception as save_err:
                         logger.error("failed to save image: %s", save_err)
+                    continue  # do not forward the raw image chunk to acpx
                 self._notify("session/update", {
                     "sessionId": session_name,
                     "requestId": rid,
