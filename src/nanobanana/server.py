@@ -1,10 +1,12 @@
 """
 ACP JSON-RPC 2.0 server over stdio.
 
-Framing: LSP-style Content-Length headers
-  Content-Length: <byte-length>\r\n
-  \r\n
-  <utf-8 json body>
+Framing: auto-detected per connection
+  - NDJSON  : each message is one JSON line  (acpx default)
+  - LSP     : Content-Length header + blank line + body
+
+The first byte received determines the mode:
+  '{' → NDJSON,  'C' (Content-Length) → LSP
 
 ACP methods handled
 ───────────────────
@@ -55,19 +57,71 @@ class NanobananaServer:
         self.sessions = SessionManager()
         self.gemini = GeminiClient()
         self._shutdown = False
+        self._ndjson: bool | None = None  # None = not yet detected
 
     # ── Wire I/O ──────────────────────────────────────────────────────────────
 
     def _read(self) -> dict | None:
-        """Read one JSON-RPC message from stdin (Content-Length framed)."""
-        headers: dict[str, str] = {}
+        """Read one JSON-RPC message from stdin.
+
+        Auto-detects framing on the first call:
+          NDJSON  — first non-empty byte is '{'
+          LSP     — first line is a Content-Length header
+        """
+        # ── NDJSON mode ───────────────────────────────────────────────────────
+        if self._ndjson is True:
+            while True:
+                raw = sys.stdin.buffer.readline()
+                if not raw:
+                    return None
+                line = raw.decode("utf-8", errors="replace").strip()
+                if line:
+                    break
+            msg = json.loads(line)
+            logger.debug("← %s", line)
+            return msg
+
+        # ── LSP (Content-Length) mode ─────────────────────────────────────────
+        if self._ndjson is False:
+            return self._read_lsp()
+
+        # ── Auto-detect on first message ──────────────────────────────────────
+        # Peek at the first non-whitespace byte without consuming it.
         while True:
             raw = sys.stdin.buffer.readline()
             if not raw:
-                return None  # EOF
+                return None
+            line = raw.decode("utf-8", errors="replace")
+            stripped = line.strip()
+            if stripped:
+                break
+
+        if stripped.startswith("{"):
+            # First line is already a complete JSON object → NDJSON
+            self._ndjson = True
+            msg = json.loads(stripped)
+            logger.debug("← (ndjson detected) %s", stripped)
+            return msg
+        else:
+            # Treat the line we already read as the first header line
+            self._ndjson = False
+            headers: dict[str, str] = {}
+            if ":" in stripped:
+                k, v = stripped.split(":", 1)
+                headers[k.strip()] = v.strip()
+            return self._read_lsp(headers)
+
+    def _read_lsp(self, headers: dict[str, str] | None = None) -> dict | None:
+        """Read remaining LSP headers then the body."""
+        if headers is None:
+            headers = {}
+        while True:
+            raw = sys.stdin.buffer.readline()
+            if not raw:
+                return None
             line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             if not line:
-                break  # blank line → end of headers
+                break
             if ":" in line:
                 k, v = line.split(":", 1)
                 headers[k.strip()] = v.strip()
@@ -78,16 +132,24 @@ class NanobananaServer:
 
         body = sys.stdin.buffer.read(length)
         msg = json.loads(body.decode("utf-8"))
-        logger.debug("← %s", json.dumps(msg, ensure_ascii=False))
+        logger.debug("← (lsp) %s", json.dumps(msg, ensure_ascii=False))
         return msg
 
     def _write(self, msg: dict) -> None:
-        """Write one JSON-RPC message to stdout (Content-Length framed)."""
-        body = json.dumps(msg, ensure_ascii=False).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        sys.stdout.buffer.write(header + body)
+        """Write one JSON-RPC message to stdout, matching detected framing."""
+        body = json.dumps(msg, ensure_ascii=False)
+        logger.debug("→ %s", body)
+
+        if self._ndjson is False:
+            # LSP framing
+            encoded = body.encode("utf-8")
+            header = f"Content-Length: {len(encoded)}\r\n\r\n".encode("ascii")
+            sys.stdout.buffer.write(header + encoded)
+        else:
+            # NDJSON (default when mode not yet determined)
+            sys.stdout.buffer.write((body + "\n").encode("utf-8"))
+
         sys.stdout.buffer.flush()
-        logger.debug("→ %s", json.dumps(msg, ensure_ascii=False))
 
     # ── Response helpers ──────────────────────────────────────────────────────
 

@@ -68,31 +68,28 @@ acpx config show
 ## 使用示例
 
 ```bash
-# 新建会话
-acpx nanobanana session new --name projectA
+# 1. 先创建 acpx session（必须，-s 依赖已存在的 session）
+acpx nanobanana sessions new --name projectA
 
-# 文生图
+# 2. 文生图
 acpx nanobanana -s projectA "生成一张赛博朋克风格的猫"
 
-# 多轮修改（无需重传图片，Gemini 自动维护上下文）
+# 3. 多轮修改（无需重传图片，Gemini 自动维护上下文）
 acpx nanobanana -s projectA "把猫的眼睛改成蓝色"
 acpx nanobanana -s projectA "添加霓虹灯背景"
 
 # 图生图（传入参考图片）
-acpx nanobanana -s projectA --file reference.jpg "参考这个风格重新生成"
+acpx nanobanana -s projectA "参考这个风格重新生成" --file reference.jpg
 
 # 并发使用多个独立会话
-acpx nanobanana session new --name projectB
+acpx nanobanana sessions new --name projectB
 acpx nanobanana -s projectB "生成一张水墨风格的山水画"
 
-# 同名新建 → 自动销毁旧会话，上下文清空
-acpx nanobanana session new --name projectA
+# 幂等创建（session 已存在时不报错）
+acpx nanobanana sessions ensure --name projectA
 
-# 查看所有运行中的会话
-acpx nanobanana session list
-
-# 删除会话
-acpx nanobanana session delete projectA
+# 关闭 session（终止进程，保留记录）
+acpx nanobanana sessions close --name projectA
 ```
 
 ## ACP 协议
