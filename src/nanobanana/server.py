@@ -325,15 +325,12 @@ class NanobananaServer:
                         path = _save_image(chunk, img_index)
                         self._last_image[session_name] = path
                         logger.info("image saved → %s", path)
-                        # Send path as text; skip forwarding the raw base64 chunk
-                        self._notify("session/update", {
-                            "sessionId": session_name,
-                            "requestId": rid,
-                            "update": {"type": "content_block",
-                                       "block": {"type": "text", "text": f"[IMAGE_PATH]: {path}"}},
-                        })
+                        sys.stderr.write(f"[IMAGE_PATH]: {path}\n")
+                        sys.stderr.flush()
                     except Exception as save_err:
                         logger.error("failed to save image: %s", save_err)
+                        sys.stderr.write(f"[IMAGE_SAVE_ERROR]: {save_err}\n")
+                        sys.stderr.flush()
                     continue  # do not forward the raw image chunk to acpx
                 self._notify("session/update", {
                     "sessionId": session_name,
@@ -342,12 +339,8 @@ class NanobananaServer:
                 })
             # Persist history so the next process can restore multi-turn context
             self.gemini.save_history(chat, session_name)
-            self._notify("session/update", {
-                "sessionId": session_name,
-                "requestId": rid,
-                "update": {"type": "content_block",
-                           "block": {"type": "text", "text": "[done]"}},
-            })
+            sys.stderr.write("[done]\n")
+            sys.stderr.flush()
             self._notify("session/stopped", {
                 "sessionId": session_name,
                 "requestId": rid,
