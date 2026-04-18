@@ -55,6 +55,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_for_log(obj: Any) -> Any:
+    """Recursively replace base64 'data' fields with a short placeholder."""
+    if isinstance(obj, dict):
+        return {
+            k: (f"<base64 {len(v)}chars>" if k == "data" and isinstance(v, str) and len(v) > 64 else _sanitize_for_log(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_sanitize_for_log(i) for i in obj]
+    return obj
+
+
 class NanobananaServer:
     def __init__(self) -> None:
         self.sessions = SessionManager()
@@ -141,13 +153,13 @@ class NanobananaServer:
 
         body = sys.stdin.buffer.read(length)
         msg = json.loads(body.decode("utf-8"))
-        logger.debug("← (lsp) %s", json.dumps(msg, ensure_ascii=False))
+        logger.debug("← (lsp) %s", json.dumps(_sanitize_for_log(msg), ensure_ascii=False))
         return msg
 
     def _write(self, msg: dict) -> None:
         """Write one JSON-RPC message to stdout, matching detected framing."""
         body = json.dumps(msg, ensure_ascii=False)
-        logger.debug("→ %s", body)
+        logger.debug("→ %s", json.dumps(_sanitize_for_log(msg), ensure_ascii=False))
 
         if self._ndjson is False:
             # LSP framing
@@ -255,7 +267,7 @@ class NanobananaServer:
     def _on_session_prompt(self, msg: dict) -> None:
         params = msg.get("params") or {}
         rid = msg.get("id")
-        logger.debug("session/prompt full params=%s", json.dumps(params, ensure_ascii=False))
+        logger.debug("session/prompt full params=%s", json.dumps(_sanitize_for_log(params), ensure_ascii=False))
 
         session_name = (params.get("sessionId")
                         or params.get("id")
@@ -282,8 +294,15 @@ class NanobananaServer:
 
         chat = self.sessions.get(session_name)
         if chat is None:
-            self._err(rid, -32602, f"会话 [{session_name}] 不存在，请先用 session/new 创建")
-            return
+            # acpx may skip session/load and send session/prompt directly —
+            # auto-create a session so the prompt still works.
+            logger.debug("session %s not found, auto-creating", session_name)
+            try:
+                chat = self.gemini.create_chat(session_id=session_name)
+                self.sessions.create(session_name, chat)
+            except Exception as exc:
+                self._err(rid, -32603, _classify_error(exc))
+                return
         if not prompt:
             self._err(rid, -32602, "session/prompt 需要 text 参数")
             return
