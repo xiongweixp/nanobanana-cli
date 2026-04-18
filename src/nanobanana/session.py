@@ -21,12 +21,11 @@ class SessionManager:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def create(self, name: str, chat: Any, cwd: str = ".") -> bool:
+    def create(self, name: str, chat: Any) -> bool:
         """Create (or replace) a session.  Returns True if a previous session was replaced."""
         replaced = name in self._store
         self._store[name] = {
             "chat": chat,
-            "cwd": cwd,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         return replaced
@@ -35,11 +34,6 @@ class SessionManager:
         """Return the raw Gemini chat object, or None if session does not exist."""
         entry = self._store.get(name)
         return entry["chat"] if entry else None
-
-    def get_cwd(self, name: str) -> str:
-        """Return the working directory for a session."""
-        entry = self._store.get(name)
-        return entry["cwd"] if entry else "."
 
     def delete(self, name: str) -> bool:
         """Delete a session.  Returns True if it existed."""

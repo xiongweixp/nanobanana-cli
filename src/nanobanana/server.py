@@ -193,7 +193,6 @@ class NanobananaServer:
                 or str(uuid.uuid4()))
         logger.debug("session/new params=%s resolved name=%s", params, name)
 
-        cwd = params.get("cwd", ".")
         try:
             # session/new always starts fresh — delete any saved history
             self.gemini.delete_history(name)
@@ -201,7 +200,7 @@ class NanobananaServer:
         except Exception as exc:
             self._err(msg["id"], -32603, _classify_error(exc))
             return
-        replaced = self.sessions.create(name, chat, cwd=cwd)
+        replaced = self.sessions.create(name, chat)
         self._ok(msg["id"], {"sessionId": name, "replaced": replaced})
 
     def _on_session_load(self, msg: dict) -> None:
@@ -214,13 +213,12 @@ class NanobananaServer:
                 or str(uuid.uuid4()))
         logger.debug("session/load params=%s resolved name=%s", params, name)
 
-        cwd = params.get("cwd", ".")
         try:
             chat = self.gemini.create_chat(session_id=name)
         except Exception as exc:
             self._err(msg["id"], -32603, _classify_error(exc))
             return
-        self.sessions.create(name, chat, cwd=cwd)
+        self.sessions.create(name, chat)
         self._ok(msg["id"], {"sessionId": name})
 
     def _on_session_list(self, msg: dict) -> None:
@@ -290,18 +288,24 @@ class NanobananaServer:
             self._err(rid, -32602, "session/prompt 需要 text 参数")
             return
 
-        cwd = self.sessions.get_cwd(session_name)
         img_index = 0
         try:
             for chunk in self.gemini.send(chat, prompt, files):
                 if chunk["type"] == "image":
                     img_index += 1
                     try:
-                        path = _save_image(chunk, cwd, img_index)
+                        path = _save_image(chunk, img_index)
                         chunk = {**chunk, "path": path}
                         logger.info("image saved → %s", path)
+                        # Send path as a text message so it's visible in acpx output
+                        self._notify("session/update", {
+                            "sessionId": session_name,
+                            "requestId": rid,
+                            "update": {"type": "content_block",
+                                       "block": {"type": "text", "text": f"图片已保存: {path}"}},
+                        })
                     except Exception as save_err:
-                        logger.error("failed to save image: %s (cwd=%s)", save_err, cwd)
+                        logger.error("failed to save image: %s", save_err)
                 self._notify("session/update", {
                     "sessionId": session_name,
                     "requestId": rid,
@@ -362,12 +366,16 @@ class NanobananaServer:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _save_image(chunk: dict, cwd: str, index: int) -> str:
-    """Write an image chunk to <cwd>/nanobanana_<timestamp>_<index>.<ext> and return the path."""
+OUTPUT_DIR = os.path.expanduser("~/nanobanana_images")
+
+
+def _save_image(chunk: dict, index: int) -> str:
+    """Write an image chunk to ~/nanobanana_images/ and return the absolute path."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     ext = (chunk.get("mime_type") or "image/png").split("/")[-1]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"nanobanana_{ts}_{index}.{ext}"
-    path = os.path.join(cwd, filename)
+    path = os.path.join(OUTPUT_DIR, filename)
     with open(path, "wb") as f:
         f.write(base64.b64decode(chunk["data"]))
     return path
