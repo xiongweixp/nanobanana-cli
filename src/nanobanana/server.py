@@ -185,8 +185,6 @@ class NanobananaServer:
 
     def _on_session_new(self, msg: dict) -> None:
         params = msg.get("params") or {}
-        # acpx passes --name as its own label; the agent receives sessionId/id/name
-        # in params — or nothing at all. Fall back to a generated UUID.
         name = (params.get("sessionId")
                 or params.get("id")
                 or params.get("name")
@@ -194,12 +192,32 @@ class NanobananaServer:
         logger.debug("session/new params=%s resolved name=%s", params, name)
 
         try:
-            chat = self.gemini.create_chat()
+            # session/new always starts fresh — delete any saved history
+            self.gemini.delete_history(name)
+            chat = self.gemini.create_chat(session_id=None)
         except Exception as exc:
             self._err(msg["id"], -32603, _classify_error(exc))
             return
         replaced = self.sessions.create(name, chat)
         self._ok(msg["id"], {"sessionId": name, "replaced": replaced})
+
+    def _on_session_load(self, msg: dict) -> None:
+        # acpx sends this when reconnecting to an existing named session.
+        # Restore conversation history from disk so multi-turn editing continues.
+        params = msg.get("params") or {}
+        name = (params.get("sessionId")
+                or params.get("id")
+                or params.get("name")
+                or str(uuid.uuid4()))
+        logger.debug("session/load params=%s resolved name=%s", params, name)
+
+        try:
+            chat = self.gemini.create_chat(session_id=name)
+        except Exception as exc:
+            self._err(msg["id"], -32603, _classify_error(exc))
+            return
+        self.sessions.create(name, chat)
+        self._ok(msg["id"], {"sessionId": name})
 
     def _on_session_list(self, msg: dict) -> None:
         self._ok(msg["id"], {"sessions": self.sessions.list()})
@@ -207,7 +225,12 @@ class NanobananaServer:
     def _on_session_delete(self, msg: dict) -> None:
         params = msg.get("params") or {}
         name = params.get("name") or params.get("sessionId")
-        deleted = self.sessions.delete(name) if name else False
+        if name:
+            self.sessions.delete(name)
+            self.gemini.delete_history(name)
+            deleted = True
+        else:
+            deleted = False
         self._ok(msg["id"], {"deleted": deleted})
 
     def _on_session_prompt(self, msg: dict) -> None:
@@ -248,13 +271,13 @@ class NanobananaServer:
 
         try:
             for chunk in self.gemini.send(chat, prompt, files):
-                # Stream each content block as a session/update notification
                 self._notify("session/update", {
                     "sessionId": session_name,
                     "requestId": rid,
                     "update": {"type": "content_block", "block": chunk},
                 })
-            # Signal completion
+            # Persist history so the next process can restore multi-turn context
+            self.gemini.save_history(chat, session_name)
             self._notify("session/stopped", {
                 "sessionId": session_name,
                 "requestId": rid,
@@ -276,6 +299,7 @@ class NanobananaServer:
             "initialize":      self._on_initialize,
             "initialized":     lambda _: None,   # notification, no reply
             "session/new":     self._on_session_new,
+            "session/load":    self._on_session_load,
             "session/list":    self._on_session_list,
             "session/delete":  self._on_session_delete,
             "session/prompt":  self._on_session_prompt,
