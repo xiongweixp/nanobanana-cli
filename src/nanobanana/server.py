@@ -30,11 +30,13 @@ Diagnostics go to stderr (or a log file when NANOBANANA_DEBUG is set).
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 import sys
 import uuid
+from datetime import datetime
 from typing import Any
 
 from .gemini import GeminiClient
@@ -191,6 +193,7 @@ class NanobananaServer:
                 or str(uuid.uuid4()))
         logger.debug("session/new params=%s resolved name=%s", params, name)
 
+        cwd = params.get("cwd", ".")
         try:
             # session/new always starts fresh — delete any saved history
             self.gemini.delete_history(name)
@@ -198,7 +201,7 @@ class NanobananaServer:
         except Exception as exc:
             self._err(msg["id"], -32603, _classify_error(exc))
             return
-        replaced = self.sessions.create(name, chat)
+        replaced = self.sessions.create(name, chat, cwd=cwd)
         self._ok(msg["id"], {"sessionId": name, "replaced": replaced})
 
     def _on_session_load(self, msg: dict) -> None:
@@ -211,16 +214,34 @@ class NanobananaServer:
                 or str(uuid.uuid4()))
         logger.debug("session/load params=%s resolved name=%s", params, name)
 
+        cwd = params.get("cwd", ".")
         try:
             chat = self.gemini.create_chat(session_id=name)
         except Exception as exc:
             self._err(msg["id"], -32603, _classify_error(exc))
             return
-        self.sessions.create(name, chat)
+        self.sessions.create(name, chat, cwd=cwd)
         self._ok(msg["id"], {"sessionId": name})
 
     def _on_session_list(self, msg: dict) -> None:
         self._ok(msg["id"], {"sessions": self.sessions.list()})
+
+    def _on_session_close(self, msg: dict) -> None:
+        # acpx sends this after a prompt completes to tear down the session gracefully
+        params = msg.get("params") or {}
+        name = params.get("sessionId") or params.get("name")
+        if name:
+            self.sessions.delete(name)
+            # keep history file so session/load can restore it later
+        self._ok(msg.get("id"), None)
+
+    def _on_session_set_mode(self, msg: dict) -> None:
+        # mode changes are not applicable to nanobanana — acknowledge and ignore
+        self._ok(msg.get("id"), None)
+
+    def _on_session_set_config(self, msg: dict) -> None:
+        # config option changes — acknowledge and ignore
+        self._ok(msg.get("id"), None)
 
     def _on_session_delete(self, msg: dict) -> None:
         params = msg.get("params") or {}
@@ -269,8 +290,15 @@ class NanobananaServer:
             self._err(rid, -32602, "session/prompt 需要 text 参数")
             return
 
+        cwd = self.sessions.get_cwd(session_name)
+        img_index = 0
         try:
             for chunk in self.gemini.send(chat, prompt, files):
+                if chunk["type"] == "image":
+                    img_index += 1
+                    path = _save_image(chunk, cwd, img_index)
+                    chunk = {**chunk, "path": path}
+                    logger.debug("image saved → %s", path)
                 self._notify("session/update", {
                     "sessionId": session_name,
                     "requestId": rid,
@@ -298,13 +326,16 @@ class NanobananaServer:
         handlers = {
             "initialize":      self._on_initialize,
             "initialized":     lambda _: None,   # notification, no reply
-            "session/new":     self._on_session_new,
-            "session/load":    self._on_session_load,
-            "session/list":    self._on_session_list,
-            "session/delete":  self._on_session_delete,
-            "session/prompt":  self._on_session_prompt,
-            "shutdown":        self._on_shutdown,
-            "exit":            lambda _: None,
+            "session/new":        self._on_session_new,
+            "session/load":       self._on_session_load,
+            "session/close":      self._on_session_close,
+            "session/list":       self._on_session_list,
+            "session/delete":     self._on_session_delete,
+            "session/prompt":     self._on_session_prompt,
+            "session/set-mode":   self._on_session_set_mode,
+            "session/set-config": self._on_session_set_config,
+            "shutdown":           self._on_shutdown,
+            "exit":               lambda _: None,
         }
 
         while not self._shutdown:
@@ -318,14 +349,26 @@ class NanobananaServer:
             if handler:
                 handler(msg)
             elif "id" in msg:
-                # Unknown request — return an error
-                self._err(msg["id"], -32601, f"未知方法: {method}")
+                # Unknown request — ack with null result so acpx doesn't stall
+                logger.debug("unknown method %s — returning null result", method)
+                self._ok(msg["id"], None)
             # Unknown notifications are silently ignored
 
         logger.info("nanobanana agent exiting")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _save_image(chunk: dict, cwd: str, index: int) -> str:
+    """Write an image chunk to <cwd>/nanobanana_<timestamp>_<index>.<ext> and return the path."""
+    ext = (chunk.get("mime_type") or "image/png").split("/")[-1]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"nanobanana_{ts}_{index}.{ext}"
+    path = os.path.join(cwd, filename)
+    with open(path, "wb") as f:
+        f.write(base64.b64decode(chunk["data"]))
+    return path
+
 
 def _extract_text(raw: Any) -> str:
     """Normalise an ACP text field that may be a plain string or a list of content blocks."""
