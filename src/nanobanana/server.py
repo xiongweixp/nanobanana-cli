@@ -201,12 +201,26 @@ class NanobananaServer:
     def _on_session_prompt(self, msg: dict) -> None:
         params = msg.get("params") or {}
         rid = msg.get("id")
+        logger.debug("session/prompt full params=%s", json.dumps(params, ensure_ascii=False))
+
         session_name = (params.get("sessionId")
                         or params.get("id")
                         or params.get("name"))
-        prompt = params.get("text") or params.get("prompt", "")
         files: list[str] = params.get("files") or []
-        logger.debug("session/prompt params=%s", params)
+
+        # acpx may send the prompt as:
+        #   "text": "plain string"
+        #   "text": [{"type": "text", "text": "..."}]   ← ACP content blocks
+        #   "messages": [{"role": "user", "content": [...]}]
+        raw = params.get("text") or params.get("prompt") or params.get("content")
+        prompt = _extract_text(raw)
+        if not prompt and "messages" in params:
+            # Take the last user message
+            for m in reversed(params["messages"]):
+                t = _extract_text(m.get("content") or m.get("text") or "")
+                if t:
+                    prompt = t
+                    break
 
         if not session_name:
             self._err(rid, -32602, "session/prompt 需要 sessionId 参数")
@@ -276,6 +290,26 @@ class NanobananaServer:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _extract_text(raw: Any) -> str:
+    """Normalise an ACP text field that may be a plain string or a list of content blocks."""
+    if not raw:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts = []
+        for block in raw:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif "text" in block:
+                    parts.append(block["text"])
+        return " ".join(p for p in parts if p)
+    return str(raw)
+
 
 def _classify_error(exc: Exception) -> str:
     msg = str(exc).lower()

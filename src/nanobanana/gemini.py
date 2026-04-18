@@ -49,14 +49,26 @@ class GeminiClient:
           {"type": "text",  "text": "..."}
           {"type": "image", "data": "<base64>", "mime_type": "image/png"}
         """
-        # Build content list: images first (if any), then the text prompt
-        contents: list[Any] = []
-        for path in file_paths or []:
-            contents.append(Image.open(path))
-        contents.append(prompt)
+        # chat.send_message() only accepts a single str / Part / Content —
+        # NOT a bare list.  For multi-part payloads (text + images) we wrap
+        # everything in a types.Content object.
+        if file_paths:
+            parts: list[types.Part] = []
+            for path in file_paths:
+                img = Image.open(path)
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                parts.append(types.Part(
+                    inline_data=types.Blob(
+                        mime_type="image/png",
+                        data=buf.getvalue(),
+                    )
+                ))
+            parts.append(types.Part(text=prompt))
+            msg: Any = types.Content(role="user", parts=parts)
+        else:
+            msg = prompt  # plain string — cheapest path
 
-        # Single item → unwrap from list (SDK accepts both forms)
-        msg = contents if len(contents) > 1 else contents[0]
         response = chat.send_message(msg)
 
         for part in response.parts:
