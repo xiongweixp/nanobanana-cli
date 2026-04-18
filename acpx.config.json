@@ -1,0 +1,12 @@
+{
+  "agents": {
+    "nanobanana": {
+      "command": "nanobanana",
+      "description": "Google Gemini multimodal image generation agent",
+      "env": {
+        "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
+        "NANOBANANA_DEFAULT_MODEL": "gemini-3.1-flash-image-preview"
+      }
+    }
+  }
+}
